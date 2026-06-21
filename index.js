@@ -1050,6 +1050,11 @@ async function run() {
     );
 
     console.log("All routes registered");
+
+    // Unknown routes -> consistent JSON 404 (registered after all routes).
+    app.use((req, res) => {
+      res.status(404).json({ message: "Route not found" });
+    });
   } catch (err) {
     console.dir(err);
   }

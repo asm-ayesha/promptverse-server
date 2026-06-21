@@ -37,6 +37,136 @@ const demoUsers = [
   },
 ];
 
+// Extra creators so the Top Creators section has variety. Each gets a few
+// prompts seeded below so they surface in the aggregation. Images use pravatar
+// (stable per id) and are written onto the user doc.
+const extraCreators = [
+  {
+    name: "Sophia Chen",
+    email: "sophia@aiverse.com",
+    password: "123456",
+    role: "creator",
+    subscription: "premium",
+    image: "https://i.pravatar.cc/150?img=5",
+  },
+  {
+    name: "Marcus Reed",
+    email: "marcus@aiverse.com",
+    password: "123456",
+    role: "creator",
+    subscription: "free",
+    image: "https://i.pravatar.cc/150?img=12",
+  },
+  {
+    name: "Aisha Khan",
+    email: "aisha@aiverse.com",
+    password: "123456",
+    role: "creator",
+    subscription: "premium",
+    image: "https://i.pravatar.cc/150?img=32",
+  },
+  {
+    name: "Diego Santos",
+    email: "diego@aiverse.com",
+    password: "123456",
+    role: "creator",
+    subscription: "free",
+    image: "https://i.pravatar.cc/150?img=15",
+  },
+  {
+    name: "Emma Wilson",
+    email: "emma@aiverse.com",
+    password: "123456",
+    role: "creator",
+    subscription: "premium",
+    image: "https://i.pravatar.cc/150?img=47",
+  },
+];
+
+// Prompt templates assigned round-robin to extra creators.
+const creatorPromptPool = [
+  {
+    title: "Viral Tweet Thread Builder",
+    description: "Turn any idea into a high-engagement Twitter/X thread.",
+    content:
+      "Act as a viral content strategist. Turn [TOPIC] into a 7-tweet thread with a strong hook, punchy lines, and a CTA in the final tweet.",
+    category: "Marketing",
+    aiTool: "ChatGPT",
+    tags: ["twitter", "social", "growth"],
+    difficulty: "Beginner",
+  },
+  {
+    title: "Python Bug Hunter",
+    description: "Find and fix subtle bugs in your Python code.",
+    content:
+      "You are a senior Python engineer. Analyze the following code for bugs, edge cases, and performance issues, then provide a corrected version:\n\n[PASTE CODE]",
+    category: "Coding",
+    aiTool: "Claude",
+    tags: ["python", "debugging", "code review"],
+    difficulty: "Pro",
+  },
+  {
+    title: "Logo Concept Generator",
+    description: "Generate creative logo directions for any brand.",
+    content:
+      "minimalist logo for [BRAND], geometric, flat vector, 2-color palette, scalable, modern, on white background --v 6",
+    category: "Design",
+    aiTool: "Midjourney",
+    tags: ["logo", "branding", "design"],
+    difficulty: "Intermediate",
+  },
+  {
+    title: "Weekly Meal Planner",
+    description: "Create a balanced 7-day meal plan with a grocery list.",
+    content:
+      "Create a 7-day meal plan for [DIET/GOAL] with breakfast, lunch, dinner, and snacks. Include macros per meal and a consolidated grocery list.",
+    category: "Productivity",
+    aiTool: "Gemini",
+    tags: ["health", "planning", "food"],
+    difficulty: "Beginner",
+  },
+  {
+    title: "Lesson Plan Architect",
+    description: "Design an engaging lesson plan for any subject.",
+    content:
+      "Act as an instructional designer. Build a 60-minute lesson plan for [SUBJECT/GRADE] with objectives, activities, assessment, and differentiation strategies.",
+    category: "Education",
+    aiTool: "ChatGPT",
+    tags: ["teaching", "lesson", "education"],
+    difficulty: "Intermediate",
+  },
+  {
+    title: "Product Launch Email",
+    description: "Write a launch announcement email that converts.",
+    content:
+      "Write a product launch email for [PRODUCT]. Include a compelling subject line, benefit-led body, social proof, and a single clear CTA.",
+    category: "Business",
+    aiTool: "Claude",
+    tags: ["email", "launch", "copywriting"],
+    difficulty: "Beginner",
+  },
+  {
+    title: "SQL Query Optimizer",
+    description: "Optimize slow SQL queries with clear explanations.",
+    content:
+      "You are a database performance expert. Optimize this SQL query and explain each change, including indexing suggestions:\n\n[PASTE QUERY]",
+    category: "Coding",
+    aiTool: "ChatGPT",
+    tags: ["sql", "database", "performance"],
+    difficulty: "Pro",
+  },
+  {
+    title: "Fantasy World Builder",
+    description: "Generate rich worldbuilding lore for stories and games.",
+    content:
+      "Act as a worldbuilding assistant. Create lore for [WORLD NAME]: geography, factions, magic/tech system, conflicts, and three key locations.",
+    category: "Writing",
+    aiTool: "Claude",
+    tags: ["worldbuilding", "fiction", "creative"],
+    difficulty: "Intermediate",
+  },
+];
+
 async function signUp(user) {
   try {
     const res = await fetch(`${CLIENT_URL}/api/auth/sign-up/email`, {
@@ -70,6 +200,11 @@ async function run() {
     await signUp(user);
   }
 
+  console.log("Seeding extra creators via better-auth...");
+  for (const user of extraCreators) {
+    await signUp(user);
+  }
+
   const client = new MongoClient(process.env.MONGO_DB_URI, {
     serverApi: {
       version: ServerApiVersion.v1,
@@ -87,6 +222,21 @@ async function run() {
     await userCollections.updateOne(
       { email: user.email },
       { $set: { role: user.role, subscription: user.subscription } }
+    );
+    console.log(`  ${user.email} -> ${user.role} / ${user.subscription}`);
+  }
+
+  console.log("Setting extra creator roles + images...");
+  for (const user of extraCreators) {
+    await userCollections.updateOne(
+      { email: user.email },
+      {
+        $set: {
+          role: user.role,
+          subscription: user.subscription,
+          image: user.image,
+        },
+      }
     );
     console.log(`  ${user.email} -> ${user.role} / ${user.subscription}`);
   }
@@ -190,6 +340,47 @@ async function run() {
     } else {
       console.log("Sample prompts already exist, skipping.");
     }
+  }
+
+  console.log("Inserting prompts for extra creators...");
+  const baseNow = Date.now();
+  let poolIndex = 0;
+  for (const ec of extraCreators) {
+    const ecDoc = await userCollections.findOne({ email: ec.email });
+    if (!ecDoc) continue;
+    const ecId = ecDoc._id.toString();
+
+    const existing = await promptCollections.countDocuments({ creatorId: ecId });
+    if (existing > 0) {
+      console.log(`  ${ec.email} already has prompts, skipping.`);
+      continue;
+    }
+
+    // Give each creator 2 prompts from the shared pool (round-robin).
+    const docs = [];
+    for (let n = 0; n < 2; n++) {
+      const sample = creatorPromptPool[poolIndex % creatorPromptPool.length];
+      poolIndex++;
+      docs.push({
+        ...sample,
+        visibility: poolIndex % 3 === 0 ? "private" : "public",
+        thumbnailUrl: "",
+        usageInstructions: "Replace the bracketed placeholders with your details.",
+        copyCount: Math.floor(Math.random() * 500),
+        avgRating: 0,
+        reviewCount: 0,
+        status: "approved",
+        featured: false,
+        rejectionFeedback: "",
+        creatorId: ecId,
+        creatorName: ecDoc.name,
+        creatorEmail: ecDoc.email,
+        creatorImage: ecDoc.image || "",
+        createdAt: new Date(baseNow - poolIndex * 43200000),
+      });
+    }
+    await promptCollections.insertMany(docs);
+    console.log(`  ${ec.email} -> inserted ${docs.length} prompts`);
   }
 
   console.log("Seed complete.");

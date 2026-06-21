@@ -1048,10 +1048,9 @@ async function run() {
           ])
           .toArray();
 
-        // Prompts grouped by AI tool.
+        // Prompts grouped by AI tool — every distinct tool in the DB.
         const promptsByAiTool = await promptCollections
           .aggregate([
-            { $match: { status: "approved" } },
             { $group: { _id: "$aiTool", count: { $sum: 1 } } },
             { $sort: { count: -1 } },
           ])

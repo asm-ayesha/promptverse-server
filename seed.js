@@ -467,6 +467,42 @@ async function run() {
     }
   }
 
+  console.log("Inserting copy events (daily activity)...");
+  const copyEventCollections = db.collection("copyEvents");
+  const existingEvents = await copyEventCollections.countDocuments({});
+  if (existingEvents > 0) {
+    console.log("  copy events already exist, skipping.");
+  } else {
+    const allPrompts = await promptCollections.find({}).toArray();
+    const events = [];
+    const DAYS = 14;
+    const DAY_MS = 86400000;
+    const now = Date.now();
+    for (const p of allPrompts) {
+      // Backfill a sample of each prompt's copies across the last 14 days.
+      const total = Math.min(p.copyCount || 0, 60);
+      for (let i = 0; i < total; i++) {
+        const daysAgo = Math.floor(Math.random() * DAYS);
+        const ts = now - daysAgo * DAY_MS - Math.floor(Math.random() * DAY_MS);
+        events.push({
+          promptId: String(p._id),
+          creatorId: String(p.creatorId),
+          userId: "seed",
+          createdAt: new Date(ts),
+        });
+      }
+    }
+    if (events.length) {
+      await copyEventCollections.insertMany(events);
+      await copyEventCollections
+        .createIndex({ creatorId: 1, createdAt: 1 })
+        .catch(() => {});
+      console.log(`  inserted ${events.length} copy events`);
+    } else {
+      console.log("  no prompts with copies, skipping copy events.");
+    }
+  }
+
   console.log("Seed complete.");
   await client.close();
   process.exit(0);

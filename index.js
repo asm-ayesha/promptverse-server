@@ -62,8 +62,14 @@ async function run() {
     const reviewCollections = myDB.collection("reviews");
     const reportCollections = myDB.collection("reports");
     const paymentCollections = myDB.collection("payments");
+    const copyEventCollections = myDB.collection("copyEvents"); // per-copy log for analytics
     const userCollections = myDB.collection("user"); // better-auth users
     const sessionCollections = myDB.collection("session"); // better-auth sessions
+
+    // Speed up creator copy-activity lookups by creator + time.
+    await copyEventCollections
+      .createIndex({ creatorId: 1, createdAt: 1 })
+      .catch(() => {});
 
     // Prevent duplicate bookmarks for the same user + prompt.
     await bookmarkCollections
@@ -448,6 +454,15 @@ async function run() {
         { _id: new ObjectId(req.params.id) },
         { $inc: { copyCount: 1 } }
       );
+      // Log the copy event so creators can see daily copy activity.
+      await copyEventCollections
+        .insertOne({
+          promptId: String(prompt._id),
+          creatorId: String(prompt.creatorId),
+          userId: String(req.user.id),
+          createdAt: new Date(),
+        })
+        .catch(() => {});
       res.json({ message: "Copied", content: prompt.content });
     });
 
@@ -668,19 +683,20 @@ async function run() {
           promptId: { $in: promptIds },
         });
 
-        // Copies per prompt (bar chart) + prompt growth by month (line chart).
+        // Copies per prompt (bar chart) + daily copy activity (line chart).
         const copiesByPrompt = prompts
           .map((p) => ({ name: p.title?.slice(0, 16) || "Untitled", copies: p.copyCount || 0 }))
           .sort((a, b) => b.copies - a.copies)
           .slice(0, 8);
 
-        const growthAgg = await promptCollections
+        // Daily copies across all of this creator's prompts.
+        const growthAgg = await copyEventCollections
           .aggregate([
-            { $match: { creatorId: req.user.id } },
+            { $match: { creatorId: String(req.user.id) } },
             {
               $group: {
                 _id: {
-                  $dateToString: { format: "%Y-%m", date: "$createdAt" },
+                  $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
                 },
                 count: { $sum: 1 },
               },
@@ -688,7 +704,7 @@ async function run() {
             { $sort: { _id: 1 } },
           ])
           .toArray();
-        const growth = growthAgg.map((g) => ({ month: g._id, count: g.count }));
+        const growth = growthAgg.map((g) => ({ date: g._id, count: g.count }));
 
         res.json({
           totalPrompts,
@@ -1032,6 +1048,109 @@ async function run() {
           ])
           .toArray();
 
+        // Prompts grouped by AI tool.
+        const promptsByAiTool = await promptCollections
+          .aggregate([
+            { $match: { status: "approved" } },
+            { $group: { _id: "$aiTool", count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+          ])
+          .toArray();
+
+        // Users grouped by role (admin / creator / user).
+        const usersByRole = await userCollections
+          .aggregate([{ $group: { _id: "$role", count: { $sum: 1 } } }])
+          .toArray();
+
+        // Users grouped by subscription (premium vs free).
+        const usersBySubscription = await userCollections
+          .aggregate([{ $group: { _id: "$subscription", count: { $sum: 1 } } }])
+          .toArray();
+
+        // Top prompts by copy count.
+        const topPrompts = await promptCollections
+          .find({}, { projection: { title: 1, copyCount: 1 } })
+          .sort({ copyCount: -1 })
+          .limit(8)
+          .toArray();
+
+        // Daily copy activity across the whole platform.
+        const dailyCopiesAgg = await copyEventCollections
+          .aggregate([
+            {
+              $group: {
+                _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+
+        // Review rating distribution (1–5 stars).
+        const ratingAgg = await reviewCollections
+          .aggregate([{ $group: { _id: "$rating", count: { $sum: 1 } } }])
+          .toArray();
+        const ratingMap = Object.fromEntries(ratingAgg.map((r) => [r._id, r.count]));
+        const ratingDistribution = [1, 2, 3, 4, 5].map((star) => ({
+          rating: `${star}★`,
+          count: ratingMap[star] || 0,
+        }));
+
+        // Reviews per day, broken down by star rating (1–5) for a stacked chart.
+        const star = (n) => ({ $sum: { $cond: [{ $eq: ["$rating", n] }, 1, 0] } });
+        const reviewsByDayAgg = await reviewCollections
+          .aggregate([
+            { $match: { createdAt: { $ne: null } } },
+            {
+              $group: {
+                _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                reviews: { $sum: 1 },
+                avgRating: { $avg: "$rating" },
+                r1: star(1),
+                r2: star(2),
+                r3: star(3),
+                r4: star(4),
+                r5: star(5),
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+        const reviewsByDay = reviewsByDayAgg.map((r) => ({
+          date: r._id,
+          reviews: r.reviews,
+          rating: Math.round((r.avgRating || 0) * 10) / 10,
+          r1: r.r1,
+          r2: r.r2,
+          r3: r.r3,
+          r4: r.r4,
+          r5: r.r5,
+        }));
+
+        // Revenue: total + daily breakdown from payments.
+        const revenueAgg = await paymentCollections
+          .aggregate([{ $group: { _id: null, total: { $sum: "$amount" } } }])
+          .toArray();
+        const totalRevenue = revenueAgg[0]?.total || 0;
+
+        const revenueByDayAgg = await paymentCollections
+          .aggregate([
+            { $match: { date: { $ne: null } } },
+            {
+              $group: {
+                _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
+                amount: { $sum: "$amount" },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+        const revenueByDay = revenueByDayAgg.map((r) => ({
+          date: r._id,
+          amount: r.amount,
+        }));
+
         res.json({
           totalUsers,
           totalPrompts,
@@ -1045,6 +1164,27 @@ async function run() {
             category: c._id || "Other",
             count: c.count,
           })),
+          promptsByAiTool: promptsByAiTool.map((t) => ({
+            tool: t._id || "Other",
+            count: t.count,
+          })),
+          usersByRole: usersByRole.map((u) => ({
+            role: u._id || "user",
+            count: u.count,
+          })),
+          usersBySubscription: usersBySubscription.map((u) => ({
+            plan: u._id || "free",
+            count: u.count,
+          })),
+          topPrompts: topPrompts.map((p) => ({
+            name: p.title?.slice(0, 16) || "Untitled",
+            copies: p.copyCount || 0,
+          })),
+          dailyCopies: dailyCopiesAgg.map((d) => ({ date: d._id, count: d.count })),
+          ratingDistribution,
+          reviewsByDay,
+          totalRevenue,
+          revenueByDay,
         });
       }
     );

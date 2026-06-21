@@ -627,10 +627,11 @@ async function run() {
     });
 
     app.get("/api/home/reviews", async (req, res) => {
+      const limit = Math.max(parseInt(req.query.limit) || 6, 1);
       const reviews = await reviewCollections
         .find({ comment: { $ne: "" } })
         .sort({ createdAt: -1 })
-        .limit(8)
+        .limit(limit)
         .toArray();
       res.json(reviews);
     });

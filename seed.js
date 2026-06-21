@@ -41,7 +41,11 @@ async function signUp(user) {
   try {
     const res = await fetch(`${CLIENT_URL}/api/auth/sign-up/email`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // better-auth validates the Origin against trustedOrigins.
+        Origin: CLIENT_URL,
+      },
       body: JSON.stringify({
         name: user.name,
         email: user.email,

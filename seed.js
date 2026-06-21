@@ -9,7 +9,7 @@
 //   2. cd promptverse-server && npm run seed
 
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
 
@@ -216,6 +216,7 @@ async function run() {
   const db = client.db("promptverse-db");
   const userCollections = db.collection("user");
   const promptCollections = db.collection("prompts");
+  const reviewCollections = db.collection("reviews");
 
   console.log("Setting roles + subscriptions...");
   for (const user of demoUsers) {
@@ -381,6 +382,89 @@ async function run() {
     }
     await promptCollections.insertMany(docs);
     console.log(`  ${ec.email} -> inserted ${docs.length} prompts`);
+  }
+
+  console.log("Inserting sample reviews...");
+  const existingReviews = await reviewCollections.countDocuments({});
+  if (existingReviews > 0) {
+    console.log("  reviews already exist, skipping.");
+  } else {
+    const approved = await promptCollections
+      .find({ status: "approved" })
+      .sort({ createdAt: 1 })
+      .toArray();
+    const reviewers = await userCollections
+      .find({
+        email: {
+          $in: [
+            "user@aiverse.com",
+            "admin@aiverse.com",
+            "sophia@aiverse.com",
+            "marcus@aiverse.com",
+            "aisha@aiverse.com",
+            "diego@aiverse.com",
+            "emma@aiverse.com",
+          ],
+        },
+      })
+      .toArray();
+
+    const reviewPool = [
+      { rating: 5, comment: "The marketing prompts saved me hours every week. Incredible quality." },
+      { rating: 5, comment: "Best place to find coding prompts — the review system keeps quality high." },
+      { rating: 4, comment: "Premium was worth every cent. The private prompts are next level." },
+      { rating: 5, comment: "I shipped a landing page in an afternoon thanks to these prompts." },
+      { rating: 5, comment: "The image prompts are stunning. My Midjourney results improved instantly." },
+      { rating: 4, comment: "Great variety across tools. Wish there were even more education prompts." },
+      { rating: 5, comment: "Clean UI, fast search, and genuinely useful prompts. Highly recommend." },
+      { rating: 5, comment: "Copy-paste, tweak the placeholders, done. Massive time saver." },
+    ];
+
+    if (approved.length && reviewers.length) {
+      const now = Date.now();
+      const docs = reviewPool.map((r, i) => {
+        const prompt = approved[i % approved.length];
+        const reviewer = reviewers[i % reviewers.length];
+        return {
+          promptId: prompt._id.toString(),
+          userId: reviewer._id.toString(),
+          name: reviewer.name,
+          email: reviewer.email,
+          image: reviewer.image || "",
+          rating: r.rating,
+          comment: r.comment,
+          createdAt: new Date(now - i * 3600000),
+        };
+      });
+      await reviewCollections.insertMany(docs);
+      console.log(`  inserted ${docs.length} reviews`);
+
+      // Recompute avgRating + reviewCount for reviewed prompts.
+      const reviewedIds = [...new Set(docs.map((d) => d.promptId))];
+      for (const pid of reviewedIds) {
+        const agg = await reviewCollections
+          .aggregate([
+            { $match: { promptId: pid } },
+            {
+              $group: {
+                _id: "$promptId",
+                avg: { $avg: "$rating" },
+                count: { $sum: 1 },
+              },
+            },
+          ])
+          .toArray();
+        if (agg[0]) {
+          await promptCollections.updateOne(
+            { _id: new ObjectId(pid) },
+            { $set: { avgRating: agg[0].avg, reviewCount: agg[0].count } }
+          );
+        }
+      }
+      console.log("  recomputed prompt ratings");
+    } else {
+      console.log("  no prompts or reviewers found, skipping reviews.");
+    }
   }
 
   console.log("Seed complete.");

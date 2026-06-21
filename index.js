@@ -1074,6 +1074,20 @@ process.on("unhandledRejection", (reason) => {
   console.error("Unhandled promise rejection:", reason);
 });
 
+// Close the MongoDB connection cleanly when the platform stops the container.
+async function shutdown(signal) {
+  console.log(`${signal} received, shutting down...`);
+  try {
+    await client.close();
+  } catch (err) {
+    console.error("Error during shutdown:", err);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
 app.listen(port, () => {
   console.log(`PromptVerse API listening on port ${port}`);
 });

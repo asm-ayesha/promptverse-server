@@ -194,8 +194,10 @@ async function run() {
     // ---------- Prompt APIs ----------
 
     // Public list with server-side search / filter / sort / pagination.
+    // Includes premium (private) prompts so they show in the marketplace with
+    // a Premium tag, but their `content` is never returned in listings.
     app.get("/api/prompts", async (req, res) => {
-      const query = { status: "approved", visibility: "public" };
+      const query = { status: "approved" };
 
       if (req.query.category) query.category = req.query.category;
       if (req.query.aiTool) query.aiTool = req.query.aiTool;
@@ -223,7 +225,7 @@ async function run() {
 
       const total = await promptCollections.countDocuments(query);
       const prompts = await promptCollections
-        .find(query)
+        .find(query, { projection: { content: 0 } })
         .sort(sort)
         .skip(skip)
         .limit(limit)
@@ -241,7 +243,7 @@ async function run() {
     app.get("/api/prompts/featured", async (req, res) => {
       const limit = parseInt(req.query.limit) || 6;
       const prompts = await promptCollections
-        .find({ status: "approved", visibility: "public" })
+        .find({ status: "approved" }, { projection: { content: 0 } })
         .sort({ featured: -1, copyCount: -1, createdAt: -1 })
         .limit(limit)
         .toArray();
@@ -604,6 +606,7 @@ async function run() {
     // ---------- Home analytics (aggregation) ----------
 
     app.get("/api/home/top-creators", async (req, res) => {
+      const limit = Math.max(parseInt(req.query.limit) || 5, 1);
       const topCreators = await promptCollections
         .aggregate([
           { $match: { status: "approved" } },
@@ -617,7 +620,7 @@ async function run() {
             },
           },
           { $sort: { totalCopies: -1, totalPrompts: -1 } },
-          { $limit: 6 },
+          { $limit: limit },
         ])
         .toArray();
       res.json(topCreators);

@@ -1055,11 +1055,24 @@ async function run() {
     app.use((req, res) => {
       res.status(404).json({ message: "Route not found" });
     });
+
+    // Centralized error handler so failures return JSON instead of HTML.
+    app.use((err, req, res, next) => {
+      console.error("Unhandled route error:", err);
+      res
+        .status(err.status || 500)
+        .json({ message: err.message || "Internal server error" });
+    });
   } catch (err) {
     console.dir(err);
   }
 }
 run().catch(console.dir);
+
+// Log unexpected failures instead of crashing silently.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
 
 app.listen(port, () => {
   console.log(`PromptVerse API listening on port ${port}`);

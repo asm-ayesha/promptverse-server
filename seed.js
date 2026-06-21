@@ -503,6 +503,99 @@ async function run() {
     }
   }
 
+  console.log("Inserting demo reports...");
+  const reportCollections = db.collection("reports");
+  const existingReports = await reportCollections.countDocuments({});
+  if (existingReports > 0) {
+    console.log("  reports already exist, skipping.");
+  } else {
+    const reportPrompts = await promptCollections.find({}).limit(12).toArray();
+    const reporters = await userCollections
+      .find({ email: { $in: ["user@aiverse.com", "marcus@aiverse.com", "diego@aiverse.com"] } })
+      .toArray();
+    if (reportPrompts.length && reporters.length) {
+      const reasons = [
+        { reason: "Spam or misleading", description: "This prompt seems to be low-effort spam." },
+        { reason: "Copyright violation", description: "Looks copied from a paid prompt pack." },
+        { reason: "Inappropriate content", description: "Contains content that violates the guidelines." },
+        { reason: "Broken or doesn't work", description: "The prompt produces no useful output." },
+        { reason: "Misleading description", description: "Results don't match what the listing claims." },
+        { reason: "Duplicate listing", description: "Same prompt is posted multiple times." },
+        { reason: "Off-topic category", description: "This prompt is filed under the wrong category." },
+        { reason: "Harmful instructions", description: "Encourages unsafe or harmful behavior." },
+        { reason: "Low quality", description: "Output is generic and not worth the listing." },
+        { reason: "Plagiarized content", description: "Appears to copy another creator's listing." },
+      ];
+      const statuses = [
+        "open",
+        "open",
+        "open",
+        "open",
+        "resolved-removed",
+        "creator-warned",
+        "dismissed",
+        "open",
+        "resolved-removed",
+        "dismissed",
+      ];
+      const DAY_MS = 86400000;
+      const now = Date.now();
+      const docs = reportPrompts.slice(0, 10).map((p, i) => {
+        const reporter = reporters[i % reporters.length];
+        return {
+          promptId: String(p._id),
+          reason: reasons[i % reasons.length].reason,
+          description: reasons[i % reasons.length].description,
+          userId: String(reporter._id),
+          reporterName: reporter.name,
+          reporterEmail: reporter.email,
+          status: statuses[i % statuses.length],
+          createdAt: new Date(now - i * 2 * DAY_MS - Math.floor(Math.random() * DAY_MS)),
+        };
+      });
+      await reportCollections.insertMany(docs);
+      console.log(`  inserted ${docs.length} demo reports`);
+    } else {
+      console.log("  no prompts or reporters found, skipping reports.");
+    }
+  }
+
+  console.log("Inserting demo payments...");
+  const paymentCollections = db.collection("payments");
+  const existingPayments = await paymentCollections.countDocuments({});
+  if (existingPayments > 0) {
+    console.log("  payments already exist, skipping.");
+  } else {
+    const customers = [
+      "admin@aiverse.com",
+      "creator@aiverse.com",
+      "sophia@aiverse.com",
+      "aisha@aiverse.com",
+      "emma@aiverse.com",
+      "liam.parker@example.com",
+      "noah.bennett@example.com",
+      "olivia.hayes@example.com",
+      "ava.morgan@example.com",
+      "ethan.brooks@example.com",
+    ];
+    const amounts = [5, 5, 5, 9.99, 5, 15, 5, 9.99, 5, 5];
+    const DAY_MS = 86400000;
+    const now = Date.now();
+    const docs = [];
+    for (let i = 0; i < customers.length; i++) {
+      const userDoc = await userCollections.findOne({ email: customers[i] });
+      docs.push({
+        userId: userDoc ? String(userDoc._id) : `demo-${i}`,
+        transactionId: `cs_demo_${Math.random().toString(36).slice(2, 12)}`,
+        email: customers[i],
+        amount: amounts[i],
+        date: new Date(now - i * 4 * DAY_MS - Math.floor(Math.random() * DAY_MS)),
+      });
+    }
+    await paymentCollections.insertMany(docs);
+    console.log(`  inserted ${docs.length} demo payments`);
+  }
+
   console.log("Seed complete.");
   await client.close();
   process.exit(0);

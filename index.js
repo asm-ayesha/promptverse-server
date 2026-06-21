@@ -757,6 +757,34 @@ async function run() {
       }
     );
 
+    // Embedded (no-redirect) flow: create a PaymentIntent and return its
+    // client secret for the Stripe Payment Element on the client.
+    app.post(
+      "/api/payments/create-payment-intent",
+      verifyToken,
+      async (req, res) => {
+        if (!stripe) {
+          return res
+            .status(503)
+            .json({ message: "Stripe is not configured on the server" });
+        }
+        try {
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: 500, // $5.00
+            currency: "usd",
+            payment_method_types: ["card"],
+            receipt_email: req.user.email,
+            description: "PromptVerse Premium (Lifetime)",
+            metadata: { userId: req.user.id, email: req.user.email },
+          });
+          res.json({ clientSecret: paymentIntent.client_secret });
+        } catch (err) {
+          console.error("Stripe payment intent error", err);
+          res.status(500).json({ message: "Could not start payment" });
+        }
+      }
+    );
+
     // Stripe webhook — raw body (registered without express.json above).
     app.post(
       "/api/payments/webhook",
@@ -780,17 +808,39 @@ async function run() {
           const session = event.data.object;
           const userId = session.metadata?.userId;
           await markPremium(userId, session);
+        } else if (event.type === "payment_intent.succeeded") {
+          const intent = event.data.object;
+          const userId = intent.metadata?.userId;
+          await markPremium(userId, {
+            id: intent.id,
+            amount_total: intent.amount,
+            customer_email: intent.metadata?.email || intent.receipt_email,
+          });
         }
         res.json({ received: true });
       }
     );
 
-    // Fallback confirm endpoint (used after redirect when no webhook is set up).
+    // Confirm endpoint — verifies the payment server-side then grants premium.
+    // Accepts a PaymentIntent id (embedded flow) or a Checkout session id.
     app.post("/api/payments/confirm", verifyToken, async (req, res) => {
-      const { sessionId } = req.body || {};
-      let paymentInfo = { id: sessionId || `manual_${Date.now()}`, amount: 5 };
+      const { paymentIntentId, sessionId } = req.body || {};
+      let paymentInfo = {
+        id: paymentIntentId || sessionId || `manual_${Date.now()}`,
+        amount: 5,
+      };
 
-      if (stripe && sessionId) {
+      if (stripe && paymentIntentId) {
+        try {
+          const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          if (intent.status !== "succeeded") {
+            return res.status(400).json({ message: "Payment not completed" });
+          }
+          paymentInfo = { id: intent.id, amount: intent.amount / 100 };
+        } catch (_) {
+          return res.status(400).json({ message: "Could not verify payment" });
+        }
+      } else if (stripe && sessionId) {
         try {
           const session = await stripe.checkout.sessions.retrieve(sessionId);
           if (session.payment_status !== "paid") {
@@ -959,8 +1009,39 @@ async function run() {
       requireRole("admin"),
       async (req, res) => {
         const payments = await paymentCollections
-          .find({})
-          .sort({ date: -1 })
+          .aggregate([
+            { $sort: { date: -1 } },
+            {
+              $addFields: {
+                userObjId: {
+                  $convert: {
+                    input: "$userId",
+                    to: "objectId",
+                    onError: null,
+                    onNull: null,
+                  },
+                },
+              },
+            },
+            {
+              $lookup: {
+                from: "user",
+                localField: "userObjId",
+                foreignField: "_id",
+                as: "purchaser",
+              },
+            },
+            { $addFields: { purchaser: { $arrayElemAt: ["$purchaser", 0] } } },
+            {
+              $addFields: {
+                purchaserName: "$purchaser.name",
+                purchaserImage: "$purchaser.image",
+                purchaserRole: "$purchaser.role",
+                purchaserSubscription: "$purchaser.subscription",
+              },
+            },
+            { $project: { purchaser: 0, userObjId: 0 } },
+          ])
           .toArray();
         res.json(payments);
       }
@@ -972,8 +1053,40 @@ async function run() {
       requireRole("admin"),
       async (req, res) => {
         const reports = await reportCollections
-          .find({})
-          .sort({ createdAt: -1 })
+          .aggregate([
+            { $sort: { createdAt: -1 } },
+            {
+              $addFields: {
+                promptObjId: {
+                  $convert: {
+                    input: "$promptId",
+                    to: "objectId",
+                    onError: null,
+                    onNull: null,
+                  },
+                },
+              },
+            },
+            {
+              $lookup: {
+                from: "prompts",
+                localField: "promptObjId",
+                foreignField: "_id",
+                as: "prompt",
+              },
+            },
+            { $addFields: { prompt: { $arrayElemAt: ["$prompt", 0] } } },
+            {
+              $addFields: {
+                promptTitle: "$prompt.title",
+                promptThumbnail: "$prompt.thumbnailUrl",
+                promptCategory: "$prompt.category",
+                creatorName: "$prompt.creatorName",
+                creatorImage: "$prompt.creatorImage",
+              },
+            },
+            { $project: { prompt: 0, promptObjId: 0 } },
+          ])
           .toArray();
         res.json(reports);
       }

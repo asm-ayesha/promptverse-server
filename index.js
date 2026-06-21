@@ -39,6 +39,17 @@ app.get("/", (req, res) => {
   res.send("PromptVerse API is running");
 });
 
+// JSON health check for uptime monitors and platform health probes
+// (Railway/Render). Reports DB connectivity without leaking internals.
+app.get("/health", async (req, res) => {
+  try {
+    await client.db("admin").command({ ping: 1 });
+    res.json({ status: "ok", db: "connected", uptime: process.uptime() });
+  } catch (err) {
+    res.status(503).json({ status: "degraded", db: "disconnected" });
+  }
+});
+
 async function run() {
   try {
     await client.connect();

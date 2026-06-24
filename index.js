@@ -229,13 +229,11 @@ async function run() {
         ];
       }
 
-      // Sorting
       let sort = { createdAt: -1 };
       if (req.query.sort === "popular") sort = { avgRating: -1, copyCount: -1 };
       else if (req.query.sort === "copied") sort = { copyCount: -1 };
       else if (req.query.sort === "latest") sort = { createdAt: -1 };
 
-      // Pagination
       const page = Math.max(parseInt(req.query.page) || 1, 1);
       const limit = Math.max(parseInt(req.query.limit) || 9, 1);
       const skip = (page - 1) * limit;
@@ -298,7 +296,6 @@ async function run() {
       const canViewFull =
         prompt.visibility === "public" || isPremium || isPrivileged;
 
-      // Attach whether the current user bookmarked this prompt.
       let isBookmarked = false;
       if (user) {
         const bm = await bookmarkCollections.findOne({
@@ -569,7 +566,6 @@ async function run() {
       };
       await reviewCollections.insertOne(review);
 
-      // Recompute prompt average rating.
       const agg = await reviewCollections
         .aggregate([
           { $match: { promptId } },
@@ -821,42 +817,63 @@ async function run() {
       }
     );
 
-    // Confirm endpoint — verifies the payment server-side then grants premium.
-    // Accepts a PaymentIntent id (embedded flow) or a Checkout session id.
+    // Premium is granted ONLY when Stripe reports the payment as
+    // succeeded/paid — no fallback. The webhook is the authoritative backup if
+    // the client never reaches this endpoint.
     app.post("/api/payments/confirm", verifyToken, async (req, res) => {
-      const { paymentIntentId, sessionId } = req.body || {};
-      let paymentInfo = {
-        id: paymentIntentId || sessionId || `manual_${Date.now()}`,
-        amount: 5,
-      };
-
-      if (stripe && paymentIntentId) {
-        try {
-          const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
-          if (intent.status !== "succeeded") {
-            return res.status(400).json({ message: "Payment not completed" });
-          }
-          paymentInfo = { id: intent.id, amount: intent.amount / 100 };
-        } catch (_) {
-          return res.status(400).json({ message: "Could not verify payment" });
-        }
-      } else if (stripe && sessionId) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(sessionId);
-          if (session.payment_status !== "paid") {
-            return res.status(400).json({ message: "Payment not completed" });
-          }
-          paymentInfo = { id: session.id, amount: session.amount_total / 100 };
-        } catch (_) {
-          /* fall through to manual record */
-        }
+      if (!stripe) {
+        return res
+          .status(503)
+          .json({ message: "Stripe is not configured on the server" });
       }
 
-      await markPremium(req.user.id, {
-        id: paymentInfo.id,
-        amount_total: paymentInfo.amount * 100,
-        customer_email: req.user.email,
-      });
+      const { paymentIntentId, sessionId } = req.body || {};
+      if (!paymentIntentId && !sessionId) {
+        return res.status(400).json({ message: "Missing payment reference" });
+      }
+
+      let paymentInfo;
+      try {
+        if (paymentIntentId) {
+          const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          if (intent.status !== "succeeded") {
+            return res.status(402).json({ message: "Payment not completed" });
+          }
+          if (intent.metadata?.userId && intent.metadata.userId !== req.user.id) {
+            return res
+              .status(403)
+              .json({ message: "Payment does not belong to this account" });
+          }
+          paymentInfo = {
+            id: intent.id,
+            amount_total: intent.amount,
+            customer_email: intent.metadata?.email || intent.receipt_email,
+          };
+        } else {
+          const session = await stripe.checkout.sessions.retrieve(sessionId);
+          if (session.payment_status !== "paid") {
+            return res.status(402).json({ message: "Payment not completed" });
+          }
+          if (
+            session.metadata?.userId &&
+            session.metadata.userId !== req.user.id
+          ) {
+            return res
+              .status(403)
+              .json({ message: "Payment does not belong to this account" });
+          }
+          paymentInfo = {
+            id: session.id,
+            amount_total: session.amount_total,
+            customer_email: session.customer_email,
+          };
+        }
+      } catch (err) {
+        console.error("Payment confirm verification failed", err.message);
+        return res.status(400).json({ message: "Could not verify payment" });
+      }
+
+      await markPremium(req.user.id, paymentInfo);
       res.json({ message: "Premium activated" });
     });
 
